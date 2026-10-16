@@ -56,7 +56,7 @@ class TelegramNotifier:
         entry_time_str = self._format_time(signal_data["intended_entry_time"]).replace(" PKT", "")
 
         # placeholders for custom emoji characters (each placeholder may be multi-code-unit)
-        placeholder_channel = "🔸"
+        placeholder_channel = "😊"
         placeholder_pair = "🔹"
 
         text = (
