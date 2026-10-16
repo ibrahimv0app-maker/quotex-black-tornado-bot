@@ -14,6 +14,8 @@ from app.feed.websocket_manager import stream_manager
 from app.engine.scheduler import SignalScheduler
 from app.api.health import router as health_router
 from app.api.stats import router as stats_router
+# register telegram webhook router so incoming updates are logged
+from app.api.telegram_webhook import router as telegram_webhook_router
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
@@ -84,6 +86,8 @@ app = FastAPI(
 
 app.include_router(health_router)
 app.include_router(stats_router)
+# include telegram webhook router to receive updates
+app.include_router(telegram_webhook_router)
 
 
 if __name__ == "__main__":
