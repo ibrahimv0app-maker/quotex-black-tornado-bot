@@ -1,5 +1,6 @@
 """Telegram bot notification dispatcher with exact Black Tornado v1.0 layout.
 Updated to support Telegram custom emojis (custom_emoji_id) for channel and pair labels.
+Fixed UTF-16 offset calculation for Telegram entities (avoids "ends in a middle of a UTF-16 symbol" error).
 """
 import aiohttp
 import pytz
@@ -33,28 +34,28 @@ class TelegramNotifier:
         dt = datetime.fromtimestamp(ts, tz=pytz.utc).astimezone(self.tz)
         return dt.strftime("%H:%M:%S PKT")
 
+    def _utf16_length(self, s: str) -> int:
+        """Return length in UTF-16 code units for a Python string."""
+        # utf-16-le will produce 2 bytes per UTF-16 code unit (no BOM), so divide by 2
+        return len(s.encode("utf-16-le")) // 2
+
+    def _utf16_offset(self, text: str, char_index: int) -> int:
+        """Return UTF-16 code unit offset for the position `char_index` (python string index)."""
+        prefix = text[:char_index]
+        return len(prefix.encode("utf-16-le")) // 2
+
     def format_signal_message(self, signal_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Returns a dict with 'text' and optional 'entities' to send via sendMessage.
 
-        New Arabic layout with custom emojis for channel and pair as requested:
-
-        [emoji_channel] قناة تداول كوتكس
-        [emoji_pair] الزوج: CADCHF-OTC
-
-        🎯(UTC 3+) نقطة الدخول: 19:47:00 
-
-        🔴 الأتجاه: PUT ⬇️
-        📊 BT Score: 89/100
-        ✅ M5/M1 Bearish Aligned
-        ⚡️ Volatility: Optimal / Low Noise
+        New Arabic layout with custom emojis for channel and pair as requested.
+        Uses UTF-16-aware offsets so Telegram accepts entities reliably.
         """
         sig = signal_data["signal"]
         score = signal_data.get("composite_score", getattr(sig, "score", 0))
-        # get time without the PKT suffix as user requested explicit (UTC 3+)
         entry_time_str = self._format_time(signal_data["intended_entry_time"]).replace(" PKT", "")
 
-        # placeholders for custom emoji characters (each placeholder occupies one character)
+        # placeholders for custom emoji characters (each placeholder may be multi-code-unit)
         placeholder_channel = "🔸"
         placeholder_pair = "🔹"
 
@@ -69,23 +70,28 @@ class TelegramNotifier:
         )
 
         entities = []
+        # compute python string index and convert to UTF-16 offsets
         try:
-            offset_channel = text.index(placeholder_channel)
+            pos_channel = text.index(placeholder_channel)
+            offset_channel = self._utf16_offset(text, pos_channel)
+            length_channel = self._utf16_length(placeholder_channel)
             entities.append({
                 "type": "custom_emoji",
                 "offset": offset_channel,
-                "length": 1,
+                "length": length_channel,
                 "custom_emoji_id": str(self.emoji_channel_id),
             })
         except ValueError:
             logger.debug("Channel placeholder not found in text; skipping custom emoji entity for channel")
 
         try:
-            offset_pair = text.index(placeholder_pair)
+            pos_pair = text.index(placeholder_pair)
+            offset_pair = self._utf16_offset(text, pos_pair)
+            length_pair = self._utf16_length(placeholder_pair)
             entities.append({
                 "type": "custom_emoji",
                 "offset": offset_pair,
-                "length": 1,
+                "length": length_pair,
                 "custom_emoji_id": str(self.emoji_pair_id),
             })
         except ValueError:
@@ -148,9 +154,7 @@ class TelegramNotifier:
             "disable_web_page_preview": True,
         }
 
-        # If entities were provided (for custom emojis), attach them. When 'entities' is present,
-        # Telegram will ignore parse_mode, so we are intentionally using plain text formatting
-        # for messages that include custom emojis.
+        # If entities were provided (for custom emojis), attach them.
         if entities:
             payload["entities"] = entities
 
@@ -172,9 +176,6 @@ class TelegramNotifier:
 
     async def broadcast_outcome(self, outcome_data: Dict[str, Any]) -> bool:
         text = self.format_outcome_message(outcome_data)
-        # outcome message uses HTML formatting today; keep using parse_mode by calling send_message without entities
-        # but send_message currently omits parse_mode if entities not provided => need to send HTML explicitly here
-        # For simplicity, call the raw API with parse_mode in a small helper
         if not self.bot_token or not self.chat_id:
             logger.info(f"[DRY-RUN / NO BOT CREDENTIALS] Telegram message:\n{text}")
             return True
