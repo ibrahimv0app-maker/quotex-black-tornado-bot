@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 from app.strategies.base import BaseStrategy, StrategySignal
 from app.indicators.black_tornado import TornadoOutput, black_tornado
+from app.strategies.otc_utils import should_execute_otc, adjust_score_for_otc, adaptive_position_size, atr_from_candles
 
 
 SPECS = [
@@ -47,29 +48,29 @@ def _trigger(i: int, o: TornadoOutput) -> Optional[str]:
     checks = {
       1: (o.bt_regime in {'RANGE','SQUEEZE','EXPANSION'} and o.bt_breakout=='UPSIDE_BREAKOUT' and strong_up and f['displacement_atr']<2.5, 'CALL'),
       2: (o.bt_regime=='TREND_UP' and strong_up and o.bt_structure=='HH_HL', 'CALL') if d>0 else (o.bt_regime=='TREND_DOWN' and strong_dn and o.bt_structure=='LH_LL','PUT'),
-      3: (o.bt_regime=='TREND_UP' and up and f['displacement_atr']<1.4 and f['lower_wick_ratio']>=.25 and f['candle_pressure']>0,'CALL') if d>0 else (o.bt_regime=='TREND_DOWN' and dn and f['displacement_atr']<1.4 and f['upper_wick_ratio']>=.25 and f['candle_pressure']<0,'PUT'),
-      4: (o.bt_regime=='TREND_UP' and up and o.bt_structure=='HH_HL' and f['candle_pressure']>8,'CALL') if d>0 else (o.bt_regime=='TREND_DOWN' and dn and o.bt_structure=='LH_LL' and f['candle_pressure']<-8,'PUT'),
-      5: (o.bt_regime in {'TREND_UP','EXPANSION'} and strong_up and f['momentum_score']>20 and f['displacement_atr']<2,'CALL') if d>0 else (o.bt_regime in {'TREND_DOWN','EXPANSION'} and strong_dn and f['momentum_score']<-20 and f['displacement_atr']<2,'PUT'),
+      3: (o.bt_regime=='TREND_UP' and up and f['displacement_atr']<1.4 and f['lower_wick_ratio']>=.25 and f['candle_pressure']>0,'CALL') if d>0 else (o.bt_regime=='TREND_DOWN' and dn and f['displa[...] ),
+      4: (o.bt_regime=='TREND_UP' and up and o.bt_structure=='HH_HL' and f['candle_pressure']>8,'CALL') if d>0 else (o.bt_regime=='TREND_DOWN' and dn and o.bt_structure=='LH_LL' and f['candle_pres[...] ),
+      5: (o.bt_regime in {'TREND_UP','EXPANSION'} and strong_up and f['momentum_score']>20 and f['displacement_atr']<2,'CALL') if d>0 else (o.bt_regime in {'TREND_DOWN','EXPANSION'} and strong_dn [...]),
       6: (o.bt_breakout=='UPSIDE_BREAKOUT' and strong_up,'CALL') if d>0 else (o.bt_breakout=='DOWNSIDE_BREAKOUT' and strong_dn,'PUT'),
-      7: (o.bt_regime in {'TREND_UP','EXPANSION'} and up and f['price']>=f['prior_high']*.9995 and f['candle_pressure']>0,'CALL') if d>0 else (o.bt_regime in {'TREND_DOWN','EXPANSION'} and dn and f['price']<=f['prior_low']*1.0005 and f['candle_pressure']<0,'PUT'),
-      8: (o.bt_regime=='EXPANSION' and strong_up and o.bt_breakout=='UPSIDE_BREAKOUT' and turb<70,'CALL') if d>0 else (o.bt_regime=='EXPANSION' and strong_dn and o.bt_breakout=='DOWNSIDE_BREAKOUT' and turb<70,'PUT'),
-      9: (o.bt_regime=='EXPANSION' and strong_up and f['candle_pressure']>35 and f['displacement_atr']<1.8,'CALL') if d>0 else (o.bt_regime=='EXPANSION' and strong_dn and f['candle_pressure']<-35 and f['displacement_atr']<1.8,'PUT'),
+      7: (o.bt_regime in {'TREND_UP','EXPANSION'} and up and f['price']>=f['prior_high']*.9995 and f['candle_pressure']>0,'CALL') if d>0 else (o.bt_regime in {'TREND_DOWN','EXPANSION'} and dn and [...]),
+      8: (o.bt_regime=='EXPANSION' and strong_up and o.bt_breakout=='UPSIDE_BREAKOUT' and turb<70,'CALL') if d>0 else (o.bt_regime=='EXPANSION' and strong_dn and o.bt_breakout=='DOWNSIDE_BREAKOUT'[...]),
+      9: (o.bt_regime=='EXPANSION' and strong_up and f['candle_pressure']>35 and f['displacement_atr']<1.8,'CALL') if d>0 else (o.bt_regime=='EXPANSION' and strong_dn and f['candle_pressure']<-35 [...]),
       10: (o.bt_htf_alignment=='BULLISH' and up and f['candle_pressure']>0,'CALL') if d>0 else (o.bt_htf_alignment=='BEARISH' and dn and f['candle_pressure']<0,'PUT'),
-      11: (o.bt_sweep_reclaim=='BULLISH_RECLAIM' and d>10 and f['candle_pressure']>0,'CALL') if o.bt_sweep_reclaim=='BULLISH_RECLAIM' else (o.bt_sweep_reclaim=='BEARISH_RECLAIM' and d<-10 and f['candle_pressure']<0,'PUT'),
-      12: (o.bt_breakout=='FAILED_BREAKOUT' and d>15 and f['candle_pressure']>0,'CALL') if o.bt_breakout=='FAILED_BREAKOUT' and d>0 else (o.bt_breakout=='FAILED_BREAKOUT' and d<-15 and f['candle_pressure']<0,'PUT'),
-      13: (o.bt_structure in {'HH_HL','MIXED'} and f['lower_wick_ratio']>.55 and d>10 and f['candle_pressure']>10,'CALL') if f['lower_wick_ratio']>.55 else (o.bt_structure in {'LH_LL','MIXED'} and f['upper_wick_ratio']>.55 and d<-10 and f['candle_pressure']<-10,'PUT'),
-      14: (o.bt_regime in {'REVERSAL_RISK','RANGE'} and ex>=55 and d>10 and f['momentum_score']>0,'CALL') if d>0 else (o.bt_regime in {'REVERSAL_RISK','RANGE'} and ex>=55 and d<-10 and f['momentum_score']<0,'PUT'),
-      15: (o.bt_regime in {'RANGE','REVERSAL_RISK'} and ex>=55 and f['displacement_atr']>=1.8 and d>12 and f['candle_pressure']>0,'CALL') if d>0 else (o.bt_regime in {'RANGE','REVERSAL_RISK'} and ex>=55 and f['displacement_atr']>=1.8 and d<-12 and f['candle_pressure']<0,'PUT'),
+      11: (o.bt_sweep_reclaim=='BULLISH_RECLAIM' and d>10 and f['candle_pressure']>0,'CALL') if o.bt_sweep_reclaim=='BULLISH_RECLAIM' else (o.bt_sweep_reclaim=='BEARISH_RECLAIM' and d<-10 and f['c[...]),
+      12: (o.bt_breakout=='FAILED_BREAKOUT' and d>15 and f['candle_pressure']>0,'CALL') if o.bt_breakout=='FAILED_BREAKOUT' and d>0 else (o.bt_breakout=='FAILED_BREAKOUT' and d<-15 and f['candle_p[...]),
+      13: (o.bt_structure in {'HH_HL','MIXED'} and f['lower_wick_ratio']>.55 and d>10 and f['candle_pressure']>10,'CALL') if f['lower_wick_ratio']>.55 else (o.bt_structure in {'LH_LL','MIXED'} and[...]),
+      14: (o.bt_regime in {'REVERSAL_RISK','RANGE'} and ex>=55 and d>10 and f['momentum_score']>0,'CALL') if d>0 else (o.bt_regime in {'REVERSAL_RISK','RANGE'} and ex>=55 and d<-10 and f['momentum[...]),
+      15: (o.bt_regime in {'RANGE','REVERSAL_RISK'} and ex>=55 and f['displacement_atr']>=1.8 and d>12 and f['candle_pressure']>0,'CALL') if d>0 else (o.bt_regime in {'RANGE','REVERSAL_RISK'} and [...]),
       16: (o.bt_regime=='RANGE' and f['price']<=f['prior_low']+0.25*f['atr'] and f['lower_wick_ratio']>.4 and d>10,'CALL'),
       17: (o.bt_regime=='RANGE' and f['price']>=f['prior_high']-0.25*f['atr'] and f['upper_wick_ratio']>.4 and d<-10,'PUT'),
-      18: (o.bt_regime=='RANGE' and f['displacement_atr']>=1.5 and d>15 and f['candle_pressure']>0,'CALL') if d>0 else (o.bt_regime=='RANGE' and f['displacement_atr']>=1.5 and d<-15 and f['candle_pressure']<0,'PUT'),
-      19: (o.bt_sweep_reclaim=='BULLISH_RECLAIM' and d>20 and f['lower_wick_ratio']>.35,'CALL') if o.bt_sweep_reclaim=='BULLISH_RECLAIM' else (o.bt_sweep_reclaim=='BEARISH_RECLAIM' and d<-20 and f['upper_wick_ratio']>.35,'PUT'),
-      20: (o.bt_regime=='REVERSAL_RISK' and d>20 and f['structure_score']>20 and f['momentum_score']>0,'CALL') if d>0 else (o.bt_regime=='REVERSAL_RISK' and d<-20 and f['structure_score']<-20 and f['momentum_score']<0,'PUT'),
-      21: (o.bt_regime in {'TREND_UP','EXPANSION'} and o.bt_turbulence<45 and strong_up and o.bt_structure=='HH_HL','CALL') if d>0 else (o.bt_regime in {'TREND_DOWN','EXPANSION'} and o.bt_turbulence<45 and strong_dn and o.bt_structure=='LH_LL','PUT'),
-      22: (o.bt_regime=='REVERSAL_RISK' and ex>=60 and o.bt_sweep_reclaim=='BULLISH_RECLAIM' and d>10,'CALL') if o.bt_sweep_reclaim=='BULLISH_RECLAIM' else (o.bt_regime=='REVERSAL_RISK' and ex>=60 and o.bt_sweep_reclaim=='BEARISH_RECLAIM' and d<-10,'PUT'),
-      23: (o.bt_regime in {'TREND_UP','EXPANSION'} and f['candle_pressure']>30 and d>25 and p>=30,'CALL') if d>0 else (o.bt_regime in {'TREND_DOWN','EXPANSION'} and f['candle_pressure']<-30 and d<-25 and p>=30,'PUT'),
+      18: (o.bt_regime=='RANGE' and f['displacement_atr']>=1.5 and d>15 and f['candle_pressure']>0,'CALL') if d>0 else (o.bt_regime=='RANGE' and f['displacement_atr']>=1.5 and d<-15 and f['candle_[...]),
+      19: (o.bt_sweep_reclaim=='BULLISH_RECLAIM' and d>20 and f['lower_wick_ratio']>.35,'CALL') if o.bt_sweep_reclaim=='BULLISH_RECLAIM' else (o.bt_sweep_reclaim=='BEARISH_RECLAIM' and d<-20 and f[...]),
+      20: (o.bt_regime=='REVERSAL_RISK' and d>20 and f['structure_score']>20 and f['momentum_score']>0,'CALL') if d>0 else (o.bt_regime=='REVERSAL_RISK' and d<-20 and f['structure_score']<-20 and [...]),
+      21: (o.bt_regime in {'TREND_UP','EXPANSION'} and o.bt_turbulence<45 and strong_up and o.bt_structure=='HH_HL','CALL') if d>0 else (o.bt_regime in {'TREND_DOWN','EXPANSION'} and o.bt_turbulen[...]),
+      22: (o.bt_regime=='REVERSAL_RISK' and ex>=60 and o.bt_sweep_reclaim=='BULLISH_RECLAIM' and d>10,'CALL') if o.bt_sweep_reclaim=='BULLISH_RECLAIM' else (o.bt_regime=='REVERSAL_RISK' and ex>=60[...]),
+      23: (o.bt_regime in {'TREND_UP','EXPANSION'} and f['candle_pressure']>30 and d>25 and p>=30,'CALL') if d>0 else (o.bt_regime in {'TREND_DOWN','EXPANSION'} and f['candle_pressure']<-30 and d<[...]),
       24: (o.bt_regime in {'RANGE','REVERSAL_RISK'} and abs(d)<45 and ex>=35 and o.bt_structure=='MIXED','CALL' if d>=0 else 'PUT'),
-      25: (o.bt_regime in {'TREND_UP','EXPANSION'} and o.bt_breakout=='UPSIDE_BREAKOUT' and strong_up,'CALL') if d>0 else (o.bt_regime in {'TREND_DOWN','EXPANSION'} and o.bt_breakout=='DOWNSIDE_BREAKOUT' and strong_dn,'PUT'),
+      25: (o.bt_regime in {'TREND_UP','EXPANSION'} and o.bt_breakout=='UPSIDE_BREAKOUT' and strong_up,'CALL') if d>0 else (o.bt_regime in {'TREND_DOWN','EXPANSION'} and o.bt_breakout=='DOWNSIDE_BR[...]),
     }
     ok, side = checks[i]
     return side if ok else None
@@ -91,10 +92,34 @@ class BlackTornadoStrategy(BaseStrategy):
         direction = _trigger(self.index, output)
         if not direction:
             return None
+
         score = min(100.0, 55 + abs(output.bt_direction)*0.25 + output.bt_confidence*0.15 + max(0, 35-output.bt_turbulence)*0.15)
         confirmations = [f"BT direction {output.bt_direction:+.0f}", f"Regime {output.bt_regime}", f"Structure {output.bt_structure}"]
         if output.bt_htf_alignment != 'NEUTRAL': confirmations.append(f"Closed M5 context {output.bt_htf_alignment}")
-        return StrategySignal(self.name, symbol, direction, score, f"{self.strategy_id} trigger satisfied; feed-only price behavior", output.snapshot(), confirmations)
+
+        # OTC gates & adjustments
+        allowed, diagnostics = should_execute_otc(
+            closed_candles,
+            context,
+            spread_threshold=context.get("OTC_SPREAD_THRESHOLD", 0.0005),
+            min_liquidity=context.get("OTC_MIN_LIQUIDITY", 100.0),
+            atr_multiplier_threshold=context.get("OTC_ATR_MULT_THRESHOLD", 3.0),
+            atr_period=context.get("OTC_ATR_PERIOD", 14),
+        )
+        if not allowed:
+            return None
+
+        score = adjust_score_for_otc(score, diagnostics, max_penalty=context.get("OTC_MAX_SCORE_PENALTY", 30.0))
+
+        balance = float(context.get("balance", context.get("account_balance", 100.0)))
+        atr_val = diagnostics.get("atr") or atr_from_candles(closed_candles, period=context.get("OTC_ATR_PERIOD", 14)) or 0.0
+        pos_size = adaptive_position_size(balance, context.get("risk_per_trade", 0.005), atr_val, atr_multiplier=context.get("OTC_ATR_SIZE_MULT", 2.0), price=closed_candles[-1]["close"])
+
+        indicators = output.snapshot() if hasattr(output, "snapshot") else {}
+        indicators.update({"otc_diagnostics": diagnostics, "pos_size": pos_size})
+        confirmations.append(f"OTC diagnostics: {diagnostics}")
+
+        return StrategySignal(self.name, symbol, direction, score, f"{self.strategy_id} trigger satisfied; feed-only price behavior", indicators, confirmations)
 
 
 # Concrete independent strategy classes for transparent discovery and testability.

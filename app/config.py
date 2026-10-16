@@ -65,5 +65,14 @@ class Settings(BaseSettings):
         "FB-OTC", "INT-OTC", "JNJ-OTC", "MCD-OTC", "MSFT-OTC", "BTC-OTC"
     ]
 
+    # OTC-specific operational tuning
+    OTC_SPREAD_THRESHOLD: float = Field(default=0.0005, description="Max allowed relative spread to accept a signal")
+    OTC_MIN_LIQUIDITY: float = Field(default=100.0, description="Minimum liquidity proxy to accept entries")
+    OTC_ATR_PERIOD: int = Field(default=14, description="ATR window for OTC gating and sizing")
+    OTC_ATR_MULT_THRESHOLD: float = Field(default=3.0, description="ATR multiplier threshold for noise gating")
+    OTC_MAX_SCORE_PENALTY: float = Field(default=30.0, description="Max penalty subtracted from strategy score due to OTC conditions")
+    OTC_ATR_SIZE_MULT: float = Field(default=2.0, description="ATR multiplier used to set stop distance for sizing")
+    RISK_PER_TRADE: float = Field(default=0.005, description="Default fraction of account balance risked per trade")
+
 
 settings = Settings()
