@@ -10,3 +10,4 @@ aiosqlite>=0.20.0
 pytz>=2024.2
 pytest>=8.3.0
 pytest-asyncio>=0.24.0
+greenlet
