@@ -74,5 +74,11 @@ class Settings(BaseSettings):
     OTC_ATR_SIZE_MULT: float = Field(default=2.0, description="ATR multiplier used to set stop distance for sizing")
     RISK_PER_TRADE: float = Field(default=0.005, description="Default fraction of account balance risked per trade")
 
+    # Martingale / recovery tuning (single doubling allowed as requested)
+    ENABLE_MARTINGALE: bool = Field(default=True, description="Enable single-step martingale recovery")
+    MARTINGALE_MAX_STEPS: int = Field(default=1, description="Maximum martingale doubling steps allowed")
+    MARTINGALE_MULTIPLIER: float = Field(default=2.0, description="Multiplier applied to position size on martingale step")
+    MARTINGALE_MAX_SEQUENCE_RISK: float = Field(default=0.02, description="Max fraction of account balance that a recovery sequence may risk")
+
 
 settings = Settings()
