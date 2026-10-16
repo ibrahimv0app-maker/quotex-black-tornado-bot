@@ -2,6 +2,7 @@
 import json
 import logging
 import time
+import datetime
 from typing import List, Dict, Any, Optional
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy import select, update, desc, func, and_
@@ -189,6 +190,18 @@ class DatabaseRepository:
 
                 sig.status = "RESOLVED"
 
+                # normalize evaluated_at to a datetime if an int timestamp was provided
+                evaluated_at = outcome_data.get("evaluated_at")
+                if isinstance(evaluated_at, (int, float)):
+                    try:
+                        evaluated_dt = datetime.datetime.utcfromtimestamp(int(evaluated_at))
+                    except Exception:
+                        evaluated_dt = None
+                elif isinstance(evaluated_at, datetime.datetime):
+                    evaluated_dt = evaluated_at
+                else:
+                    evaluated_dt = None
+
                 outcome = OutcomeRecord(
                     signal_id=signal_id,
                     entry_quote=outcome_data.get("entry_quote") or outcome_data.get("entry_price"),
@@ -197,7 +210,7 @@ class DatabaseRepository:
                     price_delta=outcome_data.get("diff") or outcome_data.get("price_delta"),
                     is_verified=outcome_data.get("is_verified", False),
                     reason=outcome_data.get("reason"),
-                    evaluated_at=outcome_data.get("evaluated_at")
+                    evaluated_at=evaluated_dt
                 )
                 session.add(outcome)
                 await session.commit()
