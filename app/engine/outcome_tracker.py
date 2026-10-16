@@ -1,6 +1,7 @@
 """Settlement engine tracking 1-minute expiry prices and calculating honest outcomes."""
 import time
 import logging
+import json
 from typing import Dict, Any, Optional, Any as AnyType
 from app.config import settings
 from app.feed.candle_store import candle_store
@@ -115,7 +116,114 @@ class OutcomeTracker:
             "evaluated_at": now_ts,
         }
 
-        # Save to database (releases global lock)
+        # Extract details from active_sig (support dict or ORM SignalRecord)
+        details = {}
+        try:
+            if isinstance(active_sig, dict):
+                details = active_sig.get("details", {}) or {}
+            else:
+                details = json.loads(getattr(active_sig, "details_json", "{}") or "{}")
+        except Exception:
+            details = {}
+
+        recovery_parent = details.get("recovery_parent")
+
+        # If this signal is a recovery attempt and has parent, handle combined resolution
+        if recovery_parent:
+            # Resolve the recovery signal first
+            await self.db.resolve_signal(sig_id, outcome_data)
+
+            # Now resolve the parent depending on recovery outcome
+            parent_id = recovery_parent
+            if outcome == "WIN":
+                parent_outcome = {
+                    "outcome": "WIN",
+                    "entry_quote": None,
+                    "expiry_quote": outcome_data.get("expiry_quote"),
+                    "price_delta": None,
+                    "is_verified": True,
+                    "reason": f"Recovered by martingale (recovery_signal={sig_id})",
+                    "evaluated_at": now_ts
+                }
+                # Resolve parent as recovered WIN
+                await self.db.resolve_signal(parent_id, parent_outcome)
+
+                # Compose a single notification summarizing recovery
+                stats = await self.db.get_cumulative_stats()
+                wins_count = stats.get("wins", 0)
+                losses_count = stats.get("losses", 0)
+                win_rate = stats.get("win_rate", 0.0)
+
+                outcome_payload = {
+                    "signal_id": parent_id,
+                    "symbol": symbol,
+                    "direction": direction,
+                    "outcome": "RECOVERED",
+                    "recovery_signal": sig_id,
+                    "entry_quote": entry_quote,
+                    "expiry_quote": outcome_data.get("expiry_quote"),
+                    "price_delta": delta,
+                    "strategy_name": self._get_field(active_sig, "strategy_name", default="Black Tornado"),
+                    "intended_entry_time": entry_ts,
+                    "intended_expiry_time": expiry_ts,
+                    "wins_count": wins_count,
+                    "losses_count": losses_count,
+                    "win_rate_percent": win_rate,
+                    "note": "Recovered by single-step martingale"
+                }
+                await telegram_notifier.broadcast_outcome(outcome_payload)
+                return True
+            else:
+                # Recovery failed — mark both recovery and parent as LOSS
+                parent_outcome = {
+                    "outcome": "LOSS",
+                    "entry_quote": None,
+                    "expiry_quote": outcome_data.get("expiry_quote"),
+                    "price_delta": None,
+                    "is_verified": True,
+                    "reason": f"Recovery attempt failed (recovery_signal={sig_id})",
+                    "evaluated_at": now_ts
+                }
+                await self.db.resolve_signal(parent_id, parent_outcome)
+
+                stats = await self.db.get_cumulative_stats()
+                wins_count = stats.get("wins", 0)
+                losses_count = stats.get("losses", 0)
+                win_rate = stats.get("win_rate", 0.0)
+
+                outcome_payload = {
+                    "signal_id": parent_id,
+                    "symbol": symbol,
+                    "direction": direction,
+                    "outcome": "FINAL_LOSS",
+                    "recovery_signal": sig_id,
+                    "entry_quote": entry_quote,
+                    "expiry_quote": outcome_data.get("expiry_quote"),
+                    "price_delta": delta,
+                    "strategy_name": self._get_field(active_sig, "strategy_name", default="Black Tornado"),
+                    "intended_entry_time": entry_ts,
+                    "intended_expiry_time": expiry_ts,
+                    "wins_count": wins_count,
+                    "losses_count": losses_count,
+                    "win_rate_percent": win_rate,
+                    "note": "Recovery attempt failed — final loss recorded"
+                }
+                await telegram_notifier.broadcast_outcome(outcome_payload)
+                return True
+
+        # If this is NOT a recovery signal and result is LOSS, consider marking pending recovery
+        if outcome == "LOSS" and settings.ENABLE_MARTINGALE:
+            try:
+                # Mark original signal as pending recovery instead of resolving immediately
+                await self.db.mark_signal_pending_recovery(sig_id, details_update={"recovery_expected": True})
+                logger.info(f"Signal #{sig_id} LOSS -> marked PENDING_RECOVERY for possible martingale recovery.")
+                # Do not create OutcomeRecord yet; wait for recovery attempt
+                return True
+            except Exception as e:
+                logger.error(f"Failed to mark signal {sig_id} pending recovery: {e}")
+                # Fall through and record the LOSS if marking pending failed
+
+        # Normal flow: record outcome for this signal (existing behavior)
         await self.db.resolve_signal(sig_id, outcome_data)
 
         # Fetch cumulative win/loss counts for Telegram notification
