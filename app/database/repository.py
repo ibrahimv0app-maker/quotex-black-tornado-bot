@@ -1,45 +1,93 @@
 @@
-     async def resolve_signal(self, signal_id: str, outcome_data: Dict[str, Any]) -> Optional[OutcomeRecord]:
+     async def get_cumulative_stats(self) -> Dict[str, Any]:
 @@
-                 logger.info(f"Signal #{signal_id} marked RESOLVED with outcome {outcome.outcome}")
-                 return outcome
+                 return {
+                     "wins": wins,
+                     "losses": losses,
+                     "draws": draws,
+                     "unverified": unverified,
+                     "total_signals": wins + losses + draws + unverified,
+                     "win_rate": winrate
+                 }
          except Exception as e:
-             logger.error(f"Error resolving signal #{signal_id}: {e}")
-             return None
+             logger.error(f"Error getting stats: {e}")
+             return {"wins": 0, "losses": 0, "draws": 0, "unverified": 0, "total_signals": 0, "win_rate": 0.0}
 +
-+    async def mark_signal_pending_recovery(self, signal_id: str, details_update: Optional[Dict[str, Any]] = None) -> bool:
++    async def get_pair_stats(self, symbol: str) -> Dict[str, Any]:
 +        """
-+        Mark an existing signal as pending recovery so it no longer blocks new ACTIVE signals.
-+        Optionally merge details_update into the existing details_json.
++        Return per-symbol statistics: wins, losses, max_consecutive_wins, max_consecutive_losses.
 +        """
 +        try:
 +            async with self.session_factory() as session:
-+                sig = await session.get(SignalRecord, signal_id)
-+                if not sig:
-+                    return False
-+                # Merge details JSON
-+                existing = {}
-+                try:
-+                    existing = json.loads(sig.details_json) if sig.details_json else {}
-+                except Exception:
-+                    existing = {}
-+                if details_update:
-+                    existing.update(details_update)
-+                sig.details_json = json.dumps(existing)
-+                sig.status = "PENDING_RECOVERY"
-+                await session.commit()
-+                logger.info(f"Signal #{signal_id} marked PENDING_RECOVERY")
-+                return True
++                stmt = (
++                    select(OutcomeRecord, SignalRecord)
++                    .join(SignalRecord, OutcomeRecord.signal_id == SignalRecord.signal_id)
++                    .where(SignalRecord.symbol == symbol)
++                    .order_by(OutcomeRecord.evaluated_at.asc())
++                )
++                res = await session.execute(stmt)
++                rows = res.all()
++                wins = 0
++                losses = 0
++                max_consec_wins = 0
++                max_consec_losses = 0
++                cur_w = 0
++                cur_l = 0
++                for row in rows:
++                    outcome_row = row[0]
++                    o = outcome_row.outcome
++                    if o == 'WIN':
++                        wins += 1
++                        cur_w += 1
++                        cur_l = 0
++                    elif o == 'LOSS':
++                        losses += 1
++                        cur_l += 1
++                        cur_w = 0
++                    else:
++                        cur_w = 0
++                        cur_l = 0
++                    if cur_w > max_consec_wins:
++                        max_consec_wins = cur_w
++                    if cur_l > max_consec_losses:
++                        max_consec_losses = cur_l
++                return {
++                    "symbol": symbol,
++                    "wins": wins,
++                    "losses": losses,
++                    "max_consecutive_wins": max_consec_wins,
++                    "max_consecutive_losses": max_consec_losses,
++                }
 +        except Exception as e:
-+            logger.error(f"Error marking signal #{signal_id} pending recovery: {e}")
-+            return False
++            logger.error(f"Error getting pair stats for {symbol}: {e}")
++            return {"symbol": symbol, "wins": 0, "losses": 0, "max_consecutive_wins": 0, "max_consecutive_losses": 0}
 +
-+    async def get_signal(self, signal_id: str) -> Optional[SignalRecord]:
-+        """Fetch signal record by id."""
++    async def get_recent_outcomes_dict(self, limit: int = 10) -> List[Dict[str, Any]]:
++        """
++        Return recent outcomes as list of dicts including signal metadata.
++        """
 +        try:
 +            async with self.session_factory() as session:
-+                sig = await session.get(SignalRecord, signal_id)
-+                return sig
++                stmt = (
++                    select(OutcomeRecord, SignalRecord)
++                    .join(SignalRecord, OutcomeRecord.signal_id == SignalRecord.signal_id)
++                    .order_by(desc(OutcomeRecord.evaluated_at))
++                    .limit(limit)
++                )
++                res = await session.execute(stmt)
++                rows = res.all()
++                out = []
++                for row in rows:
++                    outcome_row, sig_row = row[0], row[1]
++                    out.append({
++                        "signal_id": outcome_row.signal_id,
++                        "symbol": sig_row.symbol,
++                        "direction": sig_row.direction,
++                        "outcome": outcome_row.outcome,
++                        "reason": outcome_row.reason,
++                        "evaluated_at": outcome_row.evaluated_at.isoformat() if outcome_row.evaluated_at else None
++                    })
++                return out
 +        except Exception as e:
-+            logger.error(f"Error fetching signal {signal_id}: {e}")
-+            return None
++            logger.error(f"Error getting recent outcomes dict: {e}")
++            return []
