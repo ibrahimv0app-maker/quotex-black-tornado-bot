@@ -25,10 +25,12 @@ db_repo = DatabaseRepository()
 scheduler = SignalScheduler(db_repo)
 
 
-async def seed_initial_history():
-    """Download initial historical candles for active symbols to prime indicators."""
-    logger.info("Downloading initial M1 candle history for active pairs...")
-    tasks = []
+async def background_startup_sequence():
+    """Run initial REST seeding and stream connects in background so port binds immediately."""
+    logger.info("Initializing database schema...")
+    await db_repo.init_db()
+
+    logger.info("Seeding initial M1 candle history for active OTC pairs...")
     sem = asyncio.Semaphore(5)
 
     async def fetch_one(sym: str):
@@ -36,40 +38,37 @@ async def seed_initial_history():
             try:
                 candles = await feed_client.fetch_candles(sym, interval="1m", limit=120)
                 if candles:
-                    loaded = candle_store.load_initial_candles(sym, candles)
+                    candle_store.load_initial_candles(sym, candles)
                     await db_repo.upsert_candles(sym, candles[-30:])
-                    logger.debug(f"Loaded {loaded} bars for {sym}")
             except Exception as e:
                 logger.warning(f"Could not load initial history for {sym}: {e}")
 
-    for s in settings.ACTIVE_SYMBOLS:
-        tasks.append(fetch_one(s))
-
+    tasks = [fetch_one(s) for s in settings.ACTIVE_SYMBOLS]
     await asyncio.gather(*tasks, return_exceptions=True)
     logger.info("Initial candle history loaded.")
+
+    logger.info("Starting real-time multi-stream workers...")
+    await stream_manager.start()
+
+    logger.info("Starting SignalScheduler 24/7 scanning loop...")
+    await scheduler.start()
+    logger.info("Bot engine fully online and actively scanning.")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifecycle management: startup & graceful shutdown."""
+    """Application lifecycle management: instant bind + background startup."""
     logger.info("Starting Quotex M1 Signal Bot (Railway 24/7 Service)...")
     
-    # 1. Initialize DB schema
-    await db_repo.init_db()
-
-    # 2. Prime candle cache from REST
-    await seed_initial_history()
-
-    # 3. Start real-time stream manager
-    await stream_manager.start()
-
-    # 4. Start scheduler loop
-    await scheduler.start()
+    # Launch startup sequence in background so FastAPI binds to $PORT immediately
+    startup_task = asyncio.create_task(background_startup_sequence())
 
     yield
 
-    # Shutdown
+    # Graceful shutdown
     logger.info("Initiating graceful shutdown...")
+    if not startup_task.done():
+        startup_task.cancel()
     await scheduler.stop()
     await stream_manager.stop()
     await feed_client.close()
@@ -88,5 +87,11 @@ app.include_router(stats_router)
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", settings.PORT))
-    uvicorn.run("app.main:app", host=settings.HOST, port=port, reload=False)
+    port_env = os.environ.get("PORT", "8000")
+    try:
+        port = int(port_env)
+    except (ValueError, TypeError):
+        port = 8000
+    host = os.environ.get("HOST", "0.0.0.0")
+    logger.info(f"Binding server to {host}:{port}")
+    uvicorn.run("app.main:app", host=host, port=port, reload=False)

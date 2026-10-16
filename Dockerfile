@@ -1,4 +1,3 @@
-# Multi-stage Docker build for 24/7 Railway deployment
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -16,11 +15,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Railway provides PORT dynamically (default 8000)
 ENV PORT=8000
-EXPOSE ${PORT}
+EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:${PORT}/health || exit 1
 
-CMD ["sh", "-c", "python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["python", "-m", "app.main"]
