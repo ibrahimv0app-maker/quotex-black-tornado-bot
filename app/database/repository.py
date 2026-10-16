@@ -1,6 +1,7 @@
 """Database repository managing schema, queries, and atomic signal locks."""
 import json
 import logging
+import time
 from typing import List, Dict, Any, Optional
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy import select, update, desc, func, and_
@@ -75,45 +76,110 @@ class DatabaseRepository:
         return inserted
 
     async def acquire_signal_lock(self, signal_data: Dict[str, Any]) -> Optional[SignalRecord]:
-        """Atomically insert a new signal only if no ACTIVE signal exists."""
+        """Atomically insert a new signal only if no ACTIVE signal exists.
+
+        This method accepts a flexible dict (legacy support). It will map common
+        keys into the current SignalRecord schema. Prefer using
+        `acquire_signal_lock_and_create` which matches the scheduler call-site.
+        """
         async with self.session_factory() as session:
             stmt = select(SignalRecord).where(SignalRecord.status == "ACTIVE")
             res = await session.execute(stmt)
             active = res.scalar_one_or_none()
             if active:
-                logger.info(f"Lock denied: existing ACTIVE signal #{active.id} on {active.symbol} is pending.")
+                # model uses signal_id as primary key
+                logger.info(f"Lock denied: existing ACTIVE signal #{active.signal_id} on {active.symbol} is pending.")
                 return None
 
+            # Map legacy keys to current model fields
+            sig_id = signal_data.get("signal_id") or signal_data.get("id") or f"SIG_{int(time.time())}"
+            setup_score = signal_data.get("score") or signal_data.get("setup_score") or 0.0
+            signal_sent_time = signal_data.get("signal_sent_time") or signal_data.get("entry_time") or int(time.time())
+            intended_entry_time = signal_data.get("intended_entry_time") or signal_data.get("entry_time") or signal_sent_time
+            intended_expiry_time = signal_data.get("intended_expiry_time") or signal_data.get("expiry_time") or signal_sent_time + settings.EXPIRY_SECONDS
+            signal_price = signal_data.get("signal_price") or signal_data.get("entry_price_est") or None
+            details = signal_data.get("details") or signal_data.get("features") or {}
+
             sig = SignalRecord(
-                symbol=signal_data["symbol"],
-                direction=signal_data["direction"],
-                strategy_name=signal_data["strategy_name"],
-                entry_time=signal_data["entry_time"],
-                expiry_time=signal_data["expiry_time"],
-                entry_price_est=signal_data.get("entry_price_est"),
-                score=signal_data.get("score", 0.0),
-                features_snapshot=json.dumps(signal_data.get("features", {})),
-                telegram_message_id=signal_data.get("telegram_message_id"),
-                status="ACTIVE"
+                signal_id=sig_id,
+                symbol=signal_data.get("symbol"),
+                direction=signal_data.get("direction"),
+                strategy_name=signal_data.get("strategy_name"),
+                setup_score=setup_score,
+                signal_sent_time=signal_sent_time,
+                intended_entry_time=intended_entry_time,
+                intended_expiry_time=intended_expiry_time,
+                signal_price=signal_price,
+                status="ACTIVE",
+                details_json=json.dumps(details)
             )
             session.add(sig)
             await session.commit()
             await session.refresh(sig)
-            logger.info(f"Signal lock acquired: created ACTIVE signal #{sig.id} on {sig.symbol} {sig.direction}")
+            logger.info(f"Signal lock acquired: created ACTIVE signal #{sig.signal_id} on {sig.symbol} {sig.direction}")
             return sig
+
+    async def acquire_signal_lock_and_create(
+        self,
+        signal_id: str,
+        symbol: str,
+        direction: str,
+        strategy_name: str,
+        setup_score: float,
+        signal_sent_time: int,
+        intended_entry_time: int,
+        intended_expiry_time: int,
+        signal_price: Optional[float],
+        details: Dict[str, Any]
+    ) -> bool:
+        """Atomic method used by the scheduler to acquire global signal lock and create the signal.
+
+        Returns True if lock acquired and signal created, False if an ACTIVE signal already exists.
+        """
+        try:
+            async with self.session_factory() as session:
+                stmt = select(SignalRecord).where(SignalRecord.status == "ACTIVE")
+                res = await session.execute(stmt)
+                active = res.scalar_one_or_none()
+                if active:
+                    logger.info(f"Lock denied: existing ACTIVE signal #{active.signal_id} on {active.symbol} is pending.")
+                    return False
+
+                sig = SignalRecord(
+                    signal_id=signal_id,
+                    symbol=symbol,
+                    direction=direction,
+                    strategy_name=strategy_name,
+                    setup_score=setup_score,
+                    signal_sent_time=signal_sent_time,
+                    intended_entry_time=intended_entry_time,
+                    intended_expiry_time=intended_expiry_time,
+                    signal_price=signal_price,
+                    status="ACTIVE",
+                    details_json=json.dumps(details if details is not None else {})
+                )
+                session.add(sig)
+                await session.commit()
+                await session.refresh(sig)
+                logger.info(f"Signal lock acquired: created ACTIVE signal #{sig.signal_id} on {sig.symbol} {sig.direction}")
+                return True
+        except Exception as e:
+            logger.error(f"Error acquiring signal lock/create for {signal_id}: {e}")
+            return False
 
     async def get_active_signal(self) -> Optional[SignalRecord]:
         """Fetch the currently active unresolved signal."""
         try:
             async with self.session_factory() as session:
-                stmt = select(SignalRecord).where(SignalRecord.status == "ACTIVE").order_by(desc(SignalRecord.id))
+                # order by newest created_at to find the most recent ACTIVE signal
+                stmt = select(SignalRecord).where(SignalRecord.status == "ACTIVE").order_by(desc(SignalRecord.created_at))
                 res = await session.execute(stmt)
                 return res.scalar_one_or_none()
         except Exception as e:
             logger.error(f"Error getting active signal: {e}")
             return None
 
-    async def resolve_signal(self, signal_id: int, outcome_data: Dict[str, Any]) -> Optional[OutcomeRecord]:
+    async def resolve_signal(self, signal_id: str, outcome_data: Dict[str, Any]) -> Optional[OutcomeRecord]:
         """Atomically mark signal resolved and record outcome."""
         try:
             async with self.session_factory() as session:
@@ -125,13 +191,13 @@ class DatabaseRepository:
 
                 outcome = OutcomeRecord(
                     signal_id=signal_id,
-                    entry_price=outcome_data["entry_price"],
-                    expiry_price=outcome_data["expiry_price"],
-                    outcome=outcome_data["outcome"],
-                    diff=outcome_data.get("diff", 0.0),
-                    data_source=outcome_data.get("data_source", "REST_INTERPOLATED"),
-                    tolerance_status=outcome_data.get("tolerance_status", "VALID"),
-                    evaluated_at=outcome_data.get("evaluated_at", 0)
+                    entry_quote=outcome_data.get("entry_quote") or outcome_data.get("entry_price"),
+                    expiry_quote=outcome_data.get("expiry_quote") or outcome_data.get("expiry_price"),
+                    outcome=outcome_data.get("outcome"),
+                    price_delta=outcome_data.get("diff") or outcome_data.get("price_delta"),
+                    is_verified=outcome_data.get("is_verified", False),
+                    reason=outcome_data.get("reason"),
+                    evaluated_at=outcome_data.get("evaluated_at")
                 )
                 session.add(outcome)
                 await session.commit()
