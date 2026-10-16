@@ -1,40 +1,45 @@
 @@
-     async def get_recent_outcomes(self, limit: int = 50) -> List[OutcomeRecord]:
+     async def resolve_signal(self, signal_id: str, outcome_data: Dict[str, Any]) -> Optional[OutcomeRecord]:
 @@
-             return []
- 
-     async def get_consecutive_losses(self, symbol: str, max_lookback: int = 5) -> int:
-@@
-             return 0
+                 logger.info(f"Signal #{signal_id} marked RESOLVED with outcome {outcome.outcome}")
+                 return outcome
+         except Exception as e:
+             logger.error(f"Error resolving signal #{signal_id}: {e}")
+             return None
 +
-+    async def get_last_outcome_for_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
++    async def mark_signal_pending_recovery(self, signal_id: str, details_update: Optional[Dict[str, Any]] = None) -> bool:
 +        """
-+        Return the most recent resolved outcome for a given symbol joined with its signal details.
-+        Returns a dict with keys: outcome, signal_id, direction, intended_entry_time, intended_expiry_time, evaluated_at
-+        or None if not found.
++        Mark an existing signal as pending recovery so it no longer blocks new ACTIVE signals.
++        Optionally merge details_update into the existing details_json.
 +        """
 +        try:
 +            async with self.session_factory() as session:
-+                stmt = (
-+                    select(OutcomeRecord, SignalRecord)
-+                    .join(SignalRecord, OutcomeRecord.signal_id == SignalRecord.signal_id)
-+                    .where(SignalRecord.symbol == symbol)
-+                    .order_by(desc(OutcomeRecord.id))
-+                    .limit(1)
-+                )
-+                res = await session.execute(stmt)
-+                row = res.first()
-+                if not row:
-+                    return None
-+                outcome_row, sig_row = row[0], row[1]
-+                return {
-+                    "outcome": outcome_row.outcome,
-+                    "signal_id": outcome_row.signal_id,
-+                    "direction": sig_row.direction,
-+                    "intended_entry_time": sig_row.intended_entry_time,
-+                    "intended_expiry_time": sig_row.intended_expiry_time,
-+                    "evaluated_at": outcome_row.evaluated_at
-+                }
++                sig = await session.get(SignalRecord, signal_id)
++                if not sig:
++                    return False
++                # Merge details JSON
++                existing = {}
++                try:
++                    existing = json.loads(sig.details_json) if sig.details_json else {}
++                except Exception:
++                    existing = {}
++                if details_update:
++                    existing.update(details_update)
++                sig.details_json = json.dumps(existing)
++                sig.status = "PENDING_RECOVERY"
++                await session.commit()
++                logger.info(f"Signal #{signal_id} marked PENDING_RECOVERY")
++                return True
 +        except Exception as e:
-+            logger.error(f"Error fetching last outcome for {symbol}: {e}")
++            logger.error(f"Error marking signal #{signal_id} pending recovery: {e}")
++            return False
++
++    async def get_signal(self, signal_id: str) -> Optional[SignalRecord]:
++        """Fetch signal record by id."""
++        try:
++            async with self.session_factory() as session:
++                sig = await session.get(SignalRecord, signal_id)
++                return sig
++        except Exception as e:
++            logger.error(f"Error fetching signal {signal_id}: {e}")
 +            return None
