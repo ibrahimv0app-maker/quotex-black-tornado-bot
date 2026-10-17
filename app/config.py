@@ -17,9 +17,9 @@ class Settings(BaseSettings):
     API_BASE_URL: str = Field(default="https://quotexfeed.lovable.app", description="Base REST URL for market feed")
     API_WS_URL: str = Field(default="wss://quotexfeed.lovable.app", description="WebSocket base URL")
     
-    # Storage
+    # Storage (default set to provided Railway Postgres, can be overridden by env)
     DATABASE_URL: str = Field(
-        default="sqlite+aiosqlite:///quotex_bot.db",
+        default="postgresql://postgres:UPggOPHGSeMvRoKLCBFqQZbBxhfuRHSC@postgres.railway.internal:5432/railway",
         description="Async database connection string (PostgreSQL or SQLite)"
     )
 
@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     MARTINGALE_MAX_STEPS: int = Field(default=1, description="Maximum martingale doubling steps allowed")
     MARTINGALE_MULTIPLIER: float = Field(default=2.0, description="Multiplier applied to position size on martingale step")
     MARTINGALE_MAX_SEQUENCE_RISK: float = Field(default=0.02, description="Max fraction of account balance that a recovery sequence may risk")
+
+    # Backtest / account defaults
+    DEFAULT_ACCOUNT_BALANCE: float = Field(default=1000.0, description="Default account balance for backtests and sizing")
+    MARTINGALE_CAP_FRACTION: float = Field(default=0.015, description="Cap fraction of account balance used for a single position after martingale")
 
 
 settings = Settings()
